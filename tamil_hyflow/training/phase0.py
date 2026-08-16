@@ -9,12 +9,16 @@ class Phase0Runner:
         self.device = device
         self.grad_clip = grad_clip
         self.amp = amp and device.type == "cuda"
-        self.scaler = torch.cuda.amp.GradScaler(enabled=self.amp)
+        if hasattr(torch, "amp") and hasattr(torch.amp, "GradScaler"):
+            self.scaler = torch.amp.GradScaler("cuda", enabled=self.amp)
+        else:
+            self.scaler = torch.cuda.amp.GradScaler(enabled=self.amp)
 
     def train_step(self, audio):
         audio = audio.to(self.device)
         self.optimizer.zero_grad(set_to_none=True)
-        with torch.cuda.amp.autocast(enabled=self.amp):
+        autocast_ctx = torch.amp.autocast("cuda", enabled=self.amp) if hasattr(torch, "amp") else torch.cuda.amp.autocast(enabled=self.amp)
+        with autocast_ctx:
             z = self.encoder(audio)
             pred, branches = self.decoder(z)
             loss, parts = codec_loss(pred, branches, audio)

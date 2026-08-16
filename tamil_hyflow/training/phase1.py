@@ -9,7 +9,10 @@ class Phase1Runner:
         self.device = device
         self.grad_clip = grad_clip
         self.amp = amp and device.type == "cuda"
-        self.scaler = torch.cuda.amp.GradScaler(enabled=self.amp)
+        if hasattr(torch, "amp") and hasattr(torch.amp, "GradScaler"):
+            self.scaler = torch.amp.GradScaler("cuda", enabled=self.amp)
+        else:
+            self.scaler = torch.cuda.amp.GradScaler(enabled=self.amp)
         self.kl_weight = kl_weight
         self.prosody_weight = prosody_weight
         self.length_weight = length_weight
