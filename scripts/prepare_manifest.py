@@ -1,34 +1,143 @@
 import argparse
+import json
+import os
 from pathlib import Path
+import random
 import torchaudio
+from tqdm import tqdm
 from tamil_hyflow.data.manifest import ManifestRecord, write_manifest
 
+def parse_speaker(wav_path: Path, audio_root: Path, default_speaker: str = "unknown") -> str:
+    rel = wav_path.relative_to(audio_root)
+    if len(rel.parts) > 1:
+        return rel.parts[0]
+    stem = wav_path.stem
+    if "_" in stem:
+        return stem.rsplit("_", 1)[0]
+    return default_speaker
+
+def find_transcript(wav_path: Path, audio_root: Path, text_root: Path) -> Path | None:
+    rel = wav_path.relative_to(audio_root)
+    # Direct match via relative path
+    txt = text_root / rel.with_suffix(".txt")
+    if txt.exists():
+        return txt
+    # Direct match in text_root by stem
+    txt = text_root / f"{wav_path.stem}.txt"
+    if txt.exists():
+        return txt
+    # Subfolder match by stem
+    txt = text_root / rel.parent / f"{wav_path.stem}.txt"
+    if txt.exists():
+        return txt
+    return None
+
 def main():
-    p = argparse.ArgumentParser()
-    p.add_argument("--audio-root", required=True)
-    p.add_argument("--text-root", required=True)
-    p.add_argument("--output", required=True)
-    p.add_argument("--speaker", default="unknown")
+    p = argparse.ArgumentParser(description="Prepare JSONL manifest for Tamil-HyFlow training")
+    p.add_argument("--audio-root", required=True, help="Directory containing .wav audio files")
+    p.add_argument("--text-root", required=True, help="Directory containing .txt transcript files")
+    p.add_argument("--output", required=True, help="Path to output manifest .jsonl")
+    p.add_argument("--val-output", default=None, help="Path to validation manifest .jsonl (optional)")
+    p.add_argument("--val-ratio", type=float, default=0.0, help="Fraction of data for validation (e.g. 0.05)")
+    p.add_argument("--speaker", default="unknown", help="Default speaker identifier")
+    p.add_argument("--min-duration", type=float, default=0.5, help="Minimum audio duration in seconds")
+    p.add_argument("--max-duration", type=float, default=20.0, help="Maximum audio duration in seconds")
+    p.add_argument("--max-items", type=int, default=None, help="Limit number of items to process")
+    p.add_argument("--seed", type=int, default=42, help="Random seed for splitting")
     args = p.parse_args()
+
     audio_root = Path(args.audio_root)
     text_root = Path(args.text_root)
+
+    print(f"Scanning audio files in: {audio_root}")
+    print(f"Matching transcripts in: {text_root}")
+
+    wav_files = sorted(list(audio_root.rglob("*.wav")))
+    if not wav_files:
+        wav_files = sorted(list(audio_root.rglob("*.WAV")))
+    print(f"Found {len(wav_files)} total audio files.")
+
+    if args.max_items is not None and args.max_items > 0:
+        wav_files = wav_files[:args.max_items]
+        print(f"Limiting to first {len(wav_files)} files for manifest preparation.")
+
     records = []
-    for wav in sorted(audio_root.rglob("*.wav")):
-        rel = wav.relative_to(audio_root)
-        txt = text_root / rel.with_suffix(".txt")
-        if not txt.exists():
+    skipped_notxt = 0
+    skipped_empty = 0
+    skipped_dur = 0
+
+    for wav in tqdm(wav_files, desc="Processing files"):
+        txt_path = find_transcript(wav, audio_root, text_root)
+        if txt_path is None or not txt_path.exists():
+            skipped_notxt += 1
             continue
-        text = txt.read_text(encoding="utf-8").strip()
+
+        try:
+            text = txt_path.read_text(encoding="utf-8").strip()
+        except Exception:
+            try:
+                text = txt_path.read_text(encoding="latin-1").strip()
+            except Exception:
+                skipped_empty += 1
+                continue
+
         if not text:
+            skipped_empty += 1
             continue
-        info = torchaudio.info(str(wav))
-        duration = info.num_frames / info.sample_rate
-        speaker = args.speaker
-        if rel.parts:
-            speaker = rel.parts[0]
-        records.append(ManifestRecord(str(wav.resolve()), text, speaker, "ta", info.sample_rate, duration, {}))
-    write_manifest(records, args.output)
-    print(f"wrote {len(records)} records")
+
+        try:
+            info = torchaudio.info(str(wav))
+            duration = info.num_frames / info.sample_rate
+            sample_rate = info.sample_rate
+        except Exception:
+            continue
+
+        if duration < args.min_duration or duration > args.max_duration:
+            skipped_dur += 1
+            continue
+
+        speaker = parse_speaker(wav, audio_root, args.speaker)
+
+        records.append(ManifestRecord(
+            audio=str(wav.resolve()),
+            text=text,
+            speaker_id=speaker,
+            language="ta",
+            sample_rate=sample_rate,
+            duration=round(duration, 3),
+            metadata={"filename": wav.name}
+        ))
+
+    print(f"\nManifest Summary:")
+    print(f"  Valid records: {len(records)}")
+    print(f"  Skipped (no transcript): {skipped_notxt}")
+    print(f"  Skipped (empty text): {skipped_empty}")
+    print(f"  Skipped (duration out of bounds): {skipped_dur}")
+
+    if not records:
+        print("Warning: No records found!")
+        return
+
+    speakers = set(r.speaker_id for r in records)
+    total_hours = sum(r.duration for r in records if r.duration) / 3600.0
+    print(f"  Unique speakers: {len(speakers)}")
+    print(f"  Total audio: {total_hours:.2f} hours")
+
+    if args.val_ratio > 0 and args.val_output:
+        random.seed(args.seed)
+        shuffled = list(records)
+        random.shuffle(shuffled)
+        val_count = max(1, int(len(shuffled) * args.val_ratio))
+        val_records = shuffled[:val_count]
+        train_records = shuffled[val_count:]
+
+        write_manifest(train_records, args.output)
+        write_manifest(val_records, args.val_output)
+        print(f"Wrote {len(train_records)} train records to {args.output}")
+        print(f"Wrote {len(val_records)} val records to {args.val_output}")
+    else:
+        write_manifest(records, args.output)
+        print(f"Wrote {len(records)} records to {args.output}")
 
 if __name__ == "__main__":
     main()
