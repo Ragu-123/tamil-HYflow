@@ -3,8 +3,19 @@ import torch
 import torchaudio
 
 def load_audio(path: str | Path, sample_rate: int = 24000, mono: bool = True, normalize: bool = True) -> tuple[torch.Tensor, int]:
-    waveform, sr = torchaudio.load(str(path))
-    waveform = waveform.float()
+    path_str = str(path)
+    try:
+        waveform, sr = torchaudio.load(path_str)
+        waveform = waveform.float()
+    except Exception:
+        import soundfile as sf
+        data, sr = sf.read(path_str, dtype="float32")
+        waveform = torch.from_numpy(data)
+        if waveform.ndim == 1:
+            waveform = waveform.unsqueeze(0)
+        elif waveform.ndim == 2:
+            waveform = waveform.t()  # convert (samples, channels) to (channels, samples)
+    
     if mono and waveform.shape[0] > 1:
         waveform = waveform.mean(dim=0, keepdim=True)
     if sr != sample_rate:

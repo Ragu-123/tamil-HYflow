@@ -18,18 +18,56 @@ def parse_speaker(wav_path: Path, audio_root: Path, default_speaker: str = "unkn
 
 def find_transcript(wav_path: Path, audio_root: Path, text_root: Path) -> Path | None:
     rel = wav_path.relative_to(audio_root)
-    # Direct match via relative path
+    # 1. Direct match via relative path
     txt = text_root / rel.with_suffix(".txt")
     if txt.exists():
         return txt
-    # Direct match in text_root by stem
+    # 2. Direct match in text_root by stem
     txt = text_root / f"{wav_path.stem}.txt"
     if txt.exists():
         return txt
-    # Subfolder match by stem
+    # 3. Subfolder match by stem
     txt = text_root / rel.parent / f"{wav_path.stem}.txt"
     if txt.exists():
         return txt
+    # 4. Case-insensitive check (.TXT)
+    txt = text_root / rel.with_suffix(".TXT")
+    if txt.exists():
+        return txt
+    txt = text_root / f"{wav_path.stem}.TXT"
+    if txt.exists():
+        return txt
+    return None
+
+def get_audio_info(wav_path: Path) -> tuple[float, int] | None:
+    # 1. Fast Python standard library wave parser (0 dependencies, pure C/Python)
+    try:
+        import wave
+        with wave.open(str(wav_path), "rb") as wf:
+            sr = wf.getframerate()
+            frames = wf.getnframes()
+            if sr > 0:
+                return frames / float(sr), sr
+    except Exception:
+        pass
+
+    # 2. Soundfile parser
+    try:
+        import soundfile as sf
+        info = sf.info(str(wav_path))
+        if info.samplerate > 0:
+            return info.duration, info.samplerate
+    except Exception:
+        pass
+
+    # 3. Torchaudio parser
+    try:
+        info = torchaudio.info(str(wav_path))
+        if info.sample_rate > 0:
+            return info.num_frames / float(info.sample_rate), info.sample_rate
+    except Exception:
+        pass
+
     return None
 
 def main():
@@ -65,6 +103,7 @@ def main():
     skipped_notxt = 0
     skipped_empty = 0
     skipped_dur = 0
+    skipped_audio_err = 0
 
     for wav in tqdm(wav_files, desc="Processing files"):
         txt_path = find_transcript(wav, audio_root, text_root)
@@ -85,12 +124,12 @@ def main():
             skipped_empty += 1
             continue
 
-        try:
-            info = torchaudio.info(str(wav))
-            duration = info.num_frames / info.sample_rate
-            sample_rate = info.sample_rate
-        except Exception:
+        audio_info = get_audio_info(wav)
+        if audio_info is None:
+            skipped_audio_err += 1
             continue
+
+        duration, sample_rate = audio_info
 
         if duration < args.min_duration or duration > args.max_duration:
             skipped_dur += 1
@@ -113,9 +152,12 @@ def main():
     print(f"  Skipped (no transcript): {skipped_notxt}")
     print(f"  Skipped (empty text): {skipped_empty}")
     print(f"  Skipped (duration out of bounds): {skipped_dur}")
+    print(f"  Skipped (audio read error): {skipped_audio_err}")
 
     if not records:
         print("Warning: No records found!")
+        # Still create empty manifest so downstream doesn't crash on open
+        Path(args.output).parent.mkdir(parents=True, exist_ok=True)
         return
 
     speakers = set(r.speaker_id for r in records)
