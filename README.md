@@ -106,6 +106,26 @@ Phase 1 requires a Phase 0 encoder checkpoint. It trains text, prosody, speaker 
 python scripts/train_phase1.py --config configs/mile_phase1.json --manifest data/mile.jsonl --codec-checkpoint checkpoints/phase0.pt
 ```
 
+## Kaggle Notebook Quickstart
+
+A notebook is included: [`tamil_hyflow_kaggle_training.ipynb`](file:///c:/Users/SEC/Downloads/Tamil%20asr/Tamil-HyFlow/tamil_hyflow_kaggle_training.ipynb) (and [`notebooks/tamil_hyflow_kaggle_training.ipynb`](file:///c:/Users/SEC/Downloads/Tamil%20asr/Tamil-HyFlow/notebooks/tamil_hyflow_kaggle_training.ipynb)).
+
+### Steps on Kaggle:
+1. **Create a New Notebook** on Kaggle with **GPU accelerator (T4 x 2 or P100)**.
+2. **Attach Dataset**: Add `raghavanmuthuraman/iisc-mile-tamil-asr-corpus` (`mile_tamil_asr_corpus`).
+3. **Upload or clone** the repo:
+   ```bash
+   !git clone https://github.com/Ragu-123/tamil-HYflow.git
+   cd tamil-HYflow
+   pip install -e .
+   ```
+4. **Run Phase 0 (Codec)**:
+   Trains the 25 Hz continuous audio latent encoder and multi-branch subband decoder on the IISc-MILE speech recordings.
+5. **Run Phase 1 (Flow Matching TTS)**:
+   Trains Tamil phonetic frontend, prosody prior, soft monotonic alignment field, and conditional flow matching transformer.
+6. **Inference & Audio Synthesis**:
+   Synthesize custom Tamil text into 24 kHz speech using Euler ODE flow sampling and listen directly in the notebook with `IPython.display.Audio`.
+
 ## Smoke test
 
 ```bash
