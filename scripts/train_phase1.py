@@ -1,0 +1,36 @@
+import argparse
+from pathlib import Path
+import torch
+from torch.utils.data import DataLoader
+from tamil_hyflow.data.dataset import SpeechDataset
+from tamil_hyflow.data.collate import collate_batch
+from tamil_hyflow.models.hyflow import TamilHyFlow
+from tamil_hyflow.training.phase1 import Phase1Runner
+from tamil_hyflow.utils.config import Config
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--config", required=True)
+    p.add_argument("--manifest", required=True)
+    p.add_argument("--codec-checkpoint", required=True)
+    args = p.parse_args()
+    cfg = Config.from_json(args.config)
+    device = torch.device("cuda" if cfg.device == "cuda" and torch.cuda.is_available() else "cpu")
+    ds = SpeechDataset(args.manifest, cfg.sample_rate, cfg.max_seconds)
+    dl = DataLoader(ds, batch_size=cfg.batch_size, shuffle=True, num_workers=cfg.num_workers, collate_fn=collate_batch)
+    model = TamilHyFlow().to(device)
+    ckpt = torch.load(args.codec_checkpoint, map_location=device)
+    model.audio_encoder.load_state_dict(ckpt["encoder"])
+    for p0 in model.audio_encoder.parameters():
+        p0.requires_grad = False
+    optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=cfg.lr, weight_decay=cfg.weight_decay)
+    runner = Phase1Runner(model, optimizer, device, cfg.grad_clip, cfg.amp)
+    Path(cfg.save_dir).mkdir(parents=True, exist_ok=True)
+    for epoch in range(cfg.epochs):
+        for batch in dl:
+            loss, parts = runner.train_step(batch)
+        print(epoch, float(loss), {k: float(v) for k, v in parts.items()})
+        torch.save({"model": model.state_dict(), "epoch": epoch}, Path(cfg.save_dir) / "phase1.pt")
+
+if __name__ == "__main__":
+    main()

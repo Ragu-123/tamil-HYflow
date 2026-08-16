@@ -1,0 +1,15 @@
+{
+  "sample_rate": 24000,
+  "latent_rate": 25,
+  "latent_dim": 64,
+  "batch_size": 2,
+  "num_workers": 4,
+  "epochs": 30,
+  "lr": 0.0002,
+  "weight_decay": 0.01,
+  "max_seconds": 12.0,
+  "grad_clip": 1.0,
+  "device": "cuda",
+  "amp": true,
+  "save_dir": "checkpoints/mile_phase0"
+}

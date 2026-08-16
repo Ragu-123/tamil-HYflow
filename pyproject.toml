@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tamil-hyflow"
+version = "0.1.0"
+description = "From-scratch Tamil continuous-latent flow TTS"
+requires-python = ">=3.10"
+dependencies = [
+  "torch>=2.2",
+  "torchaudio>=2.2",
+  "numpy>=1.24",
+  "soundfile>=0.12",
+  "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.setuptools.packages.find]
+include = ["tamil_hyflow*"]
