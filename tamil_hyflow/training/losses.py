@@ -26,10 +26,25 @@ def multires_stft_loss(pred, target):
 def subband_targets(y, sample_rate=24000):
     if y.ndim == 3:
         y = y.squeeze(1)
-    low = torchaudio.functional.lowpass_biquad(y, sample_rate, 1000.0)
-    mid = torchaudio.functional.highpass_biquad(y, sample_rate, 1000.0)
-    mid = torchaudio.functional.lowpass_biquad(mid, sample_rate, 8000.0)
-    high = torchaudio.functional.highpass_biquad(y, sample_rate, 8000.0)
+    
+    # Pure PyTorch FFT subband filtering (100% CUDA, AMP & DDP compatible, zero CUDA IIR bugs)
+    n = y.shape[-1]
+    y_float = y.float()
+    y_fft = torch.fft.rfft(y_float, n=n, dim=-1)
+    freqs = torch.fft.rfftfreq(n, d=1.0 / sample_rate, device=y.device)
+
+    # Low band: 0 to 1000 Hz
+    mask_low = (freqs <= 1000.0).to(y_fft.dtype)
+    low = torch.fft.irfft(y_fft * mask_low, n=n, dim=-1).to(y.dtype)
+
+    # Mid band: 1000 Hz to 8000 Hz
+    mask_mid = ((freqs > 1000.0) & (freqs <= 8000.0)).to(y_fft.dtype)
+    mid = torch.fft.irfft(y_fft * mask_mid, n=n, dim=-1).to(y.dtype)
+
+    # High band: 8000 Hz to Nyquist
+    mask_high = (freqs > 8000.0).to(y_fft.dtype)
+    high = torch.fft.irfft(y_fft * mask_high, n=n, dim=-1).to(y.dtype)
+
     return low, mid, high
 
 def codec_loss(pred, branches, target, subband_weight=1.0, stft_weight=1.0, wave_weight=1.0):
