@@ -297,11 +297,20 @@ with open(PHASE0_CONFIG_PATH, "w") as f:
 print(f"Phase 0 Configuration saved to {PHASE0_CONFIG_PATH}:")
 print(json.dumps(phase0_cfg, indent=2))
 
-# Run Phase 0 Training
-!python scripts/train_phase0.py \\
-    --config "{PHASE0_CONFIG_PATH}" \\
-    --manifest "{TRAIN_MANIFEST}" \\
-    --save-every 1"""))
+# Run Phase 0 Training (Auto-detects Multi-GPU DDP or Single GPU)
+num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 1
+if num_gpus > 1:
+    print(f"🚀 Detected {num_gpus} GPUs! Running distributed Phase 0 training (torchrun)...")
+    !torchrun --nproc_per_node={num_gpus} scripts/train_phase0.py \
+        --config "{PHASE0_CONFIG_PATH}" \
+        --manifest "{TRAIN_MANIFEST}" \
+        --save-every 1
+else:
+    print("Running Phase 0 training on single device...")
+    !python scripts/train_phase0.py \
+        --config "{PHASE0_CONFIG_PATH}" \
+        --manifest "{TRAIN_MANIFEST}" \
+        --save-every 1"""))
 
     # Cell 9: Phase 0 Evaluation & Reconstruction Listening
     cells.append(md(r"""## 8. 🔬 Phase 0 Codec Evaluation: Original vs. Reconstructed Audio
@@ -374,12 +383,22 @@ with open(PHASE1_CONFIG_PATH, "w") as f:
 print(f"Phase 1 Configuration saved to {PHASE1_CONFIG_PATH}:")
 print(json.dumps(phase1_cfg, indent=2))
 
-# Train Phase 1 Model
-!python scripts/train_phase1.py \\
-    --config "{PHASE1_CONFIG_PATH}" \\
-    --manifest "{TRAIN_MANIFEST}" \\
-    --codec-checkpoint "{phase0_ckpt_path}" \\
-    --save-every 1"""))
+# Train Phase 1 Model (Auto-detects Multi-GPU DDP or Single GPU)
+num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 1
+if num_gpus > 1:
+    print(f"🚀 Detected {num_gpus} GPUs! Running distributed Phase 1 training (torchrun)...")
+    !torchrun --nproc_per_node={num_gpus} scripts/train_phase1.py \
+        --config "{PHASE1_CONFIG_PATH}" \
+        --manifest "{TRAIN_MANIFEST}" \
+        --codec-checkpoint "{phase0_ckpt_path}" \
+        --save-every 1
+else:
+    print("Running Phase 1 training on single device...")
+    !python scripts/train_phase1.py \
+        --config "{PHASE1_CONFIG_PATH}" \
+        --manifest "{TRAIN_MANIFEST}" \
+        --codec-checkpoint "{phase0_ckpt_path}" \
+        --save-every 1"""))
 
     # Cell 11: Inference & Speech Synthesis
     cells.append(md("""## 10. 🗣️ Speech Synthesis Demo (Tamil Text-to-Speech Inference)

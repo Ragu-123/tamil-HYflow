@@ -1,7 +1,10 @@
 import argparse
+import os
 from pathlib import Path
 import torch
-from torch.utils.data import DataLoader
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import DataLoader, DistributedSampler
 from tqdm import tqdm
 from tamil_hyflow.data.dataset import SpeechDataset
 from tamil_hyflow.data.collate import collate_batch
@@ -10,27 +13,56 @@ from tamil_hyflow.models.decoder import MultiBranchSubbandDecoder
 from tamil_hyflow.training.phase0 import Phase0Runner
 from tamil_hyflow.utils.config import Config
 
+def init_distributed():
+    if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
+        rank = int(os.environ["RANK"])
+        world_size = int(os.environ["WORLD_SIZE"])
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        backend = "nccl" if torch.cuda.is_available() and os.name != "nt" else "gloo"
+        if torch.cuda.is_available():
+            torch.cuda.set_device(local_rank)
+            device = torch.device(f"cuda:{local_rank}")
+        else:
+            device = torch.device("cpu")
+        dist.init_process_group(backend=backend, rank=rank, world_size=world_size)
+        return True, rank, local_rank, world_size, device
+    else:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        return False, 0, 0, 1, device
+
+def unwrap_model(model):
+    return model.module if hasattr(model, "module") else model
+
 def main():
-    p = argparse.ArgumentParser(description="Train Tamil-HyFlow Phase 0 Continuous Acoustic Codec")
+    p = argparse.ArgumentParser(description="Train Tamil-HyFlow Phase 0 Continuous Acoustic Codec (Single & Multi-GPU)")
     p.add_argument("--config", required=True, help="Path to config JSON")
     p.add_argument("--manifest", required=True, help="Path to training manifest JSONL")
     p.add_argument("--resume", default=None, help="Path to checkpoint to resume from")
     p.add_argument("--save-every", type=int, default=1, help="Save checkpoint every N epochs")
+    p.add_argument("--dp", action="store_true", help="Use torch.nn.DataParallel for multi-GPU without torchrun")
     args = p.parse_args()
 
+    is_dist, rank, local_rank, world_size, device = init_distributed()
+    is_main = (rank == 0)
+
     cfg = Config.from_json(args.config)
-    device = torch.device("cuda" if cfg.device == "cuda" and torch.cuda.is_available() else "cpu")
-    print(f"[Phase 0] Using device: {device}")
+    if is_main:
+        num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        mode = f"DDP ({world_size} processes)" if is_dist else (f"DataParallel ({num_gpus} GPUs)" if (args.dp and num_gpus > 1) else f"Single Device ({device})")
+        print(f"[Phase 0] Training Mode: {mode} | Primary Device: {device}")
 
     ds = SpeechDataset(args.manifest, cfg.sample_rate, cfg.max_seconds)
-    print(f"[Phase 0] Loaded dataset with {len(ds)} utterances")
+    if is_main:
+        print(f"[Phase 0] Loaded dataset with {len(ds)} utterances")
 
-    # In Kaggle/interactive environments, clamp num_workers to CPU count
+    sampler = DistributedSampler(ds, num_replicas=world_size, rank=rank, shuffle=True) if is_dist else None
     num_workers = min(cfg.num_workers, 2)
+
     dl = DataLoader(
         ds,
         batch_size=cfg.batch_size,
-        shuffle=True,
+        shuffle=(sampler is None),
+        sampler=sampler,
         num_workers=num_workers,
         collate_fn=collate_batch,
         pin_memory=(device.type == "cuda"),
@@ -39,70 +71,89 @@ def main():
 
     encoder = ContinuousAudioEncoder().to(device)
     decoder = MultiBranchSubbandDecoder().to(device)
+
+    start_epoch = 0
+    if args.resume and Path(args.resume).exists():
+        if is_main:
+            print(f"[Phase 0] Resuming from checkpoint: {args.resume}")
+        ckpt = torch.load(args.resume, map_location=device)
+        encoder.load_state_dict(ckpt["encoder"])
+        decoder.load_state_dict(ckpt["decoder"])
+        if "epoch" in ckpt:
+            start_epoch = ckpt["epoch"] + 1
+
     optimizer = torch.optim.AdamW(
         list(encoder.parameters()) + list(decoder.parameters()),
         lr=cfg.lr,
         weight_decay=cfg.weight_decay
     )
 
-    start_epoch = 0
-    if args.resume and Path(args.resume).exists():
-        print(f"[Phase 0] Resuming from checkpoint: {args.resume}")
-        ckpt = torch.load(args.resume, map_location=device)
-        encoder.load_state_dict(ckpt["encoder"])
-        decoder.load_state_dict(ckpt["decoder"])
-        if "optimizer" in ckpt:
-            optimizer.load_state_dict(ckpt["optimizer"])
-        if "epoch" in ckpt:
-            start_epoch = ckpt["epoch"] + 1
+    if is_dist:
+        encoder = DDP(encoder, device_ids=[local_rank] if device.type == "cuda" else None)
+        decoder = DDP(decoder, device_ids=[local_rank] if device.type == "cuda" else None)
+    elif args.dp and torch.cuda.device_count() > 1:
+        encoder = torch.nn.DataParallel(encoder)
+        decoder = torch.nn.DataParallel(decoder)
 
     runner = Phase0Runner(encoder, decoder, optimizer, device, cfg.grad_clip, cfg.amp)
     save_dir = Path(cfg.save_dir)
-    save_dir.mkdir(parents=True, exist_ok=True)
+    if is_main:
+        save_dir.mkdir(parents=True, exist_ok=True)
+        print(f"[Phase 0] Starting training for {cfg.epochs} epochs. Output dir: {save_dir}")
 
-    print(f"[Phase 0] Starting training for {cfg.epochs} epochs. Output dir: {save_dir}")
     best_loss = float("inf")
 
     for epoch in range(start_epoch, cfg.epochs):
+        if is_dist and sampler is not None:
+            sampler.set_epoch(epoch)
+
         encoder.train()
         decoder.train()
         total_loss = 0.0
-        pbar = tqdm(dl, desc=f"Epoch {epoch + 1}/{cfg.epochs}", leave=True)
+        pbar = tqdm(dl, desc=f"Epoch {epoch + 1}/{cfg.epochs}", leave=True, disable=not is_main)
 
         for step, batch in enumerate(pbar):
             loss, parts = runner.train_step(batch.audio)
             loss_val = float(loss.item())
             total_loss += loss_val
 
-            pbar.set_postfix({
-                "loss": f"{loss_val:.4f}",
-                "stft": f"{float(parts.get('stft', 0)):.3f}",
-                "l1": f"{float(parts.get('l1', 0)):.3f}",
-            })
+            if is_main:
+                pbar.set_postfix({
+                    "loss": f"{loss_val:.4f}",
+                    "stft": f"{float(parts.get('stft', 0)):.3f}",
+                    "l1": f"{float(parts.get('l1', 0)):.3f}",
+                })
 
         avg_loss = total_loss / max(1, len(dl))
-        print(f"[Epoch {epoch + 1:03d}/{cfg.epochs:03d}] Avg Loss: {avg_loss:.5f}")
+        if is_main:
+            print(f"[Epoch {epoch + 1:03d}/{cfg.epochs:03d}] Avg Loss: {avg_loss:.5f}")
 
-        # Save latest checkpoint
-        ckpt_data = {
-            "encoder": encoder.state_dict(),
-            "decoder": decoder.state_dict(),
-            "optimizer": optimizer.state_dict(),
-            "epoch": epoch,
-            "loss": avg_loss,
-            "config": cfg.__dict__,
-        }
-        torch.save(ckpt_data, save_dir / "phase0_latest.pt")
-        torch.save(ckpt_data, save_dir / "phase0.pt")
+            raw_enc = unwrap_model(encoder)
+            raw_dec = unwrap_model(decoder)
 
-        if avg_loss < best_loss:
-            best_loss = avg_loss
-            torch.save(ckpt_data, save_dir / "phase0_best.pt")
+            ckpt_data = {
+                "encoder": raw_enc.state_dict(),
+                "decoder": raw_dec.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "epoch": epoch,
+                "loss": avg_loss,
+                "config": cfg.__dict__,
+            }
+            torch.save(ckpt_data, save_dir / "phase0_latest.pt")
+            torch.save(ckpt_data, save_dir / "phase0.pt")
 
-        if (epoch + 1) % args.save_every == 0:
-            torch.save(ckpt_data, save_dir / f"phase0_epoch_{epoch + 1:03d}.pt")
+            if avg_loss < best_loss:
+                best_loss = avg_loss
+                torch.save(ckpt_data, save_dir / "phase0_best.pt")
 
-    print(f"[Phase 0] Training complete! Best loss: {best_loss:.5f}. Checkpoints saved in {save_dir}")
+            if (epoch + 1) % args.save_every == 0:
+                torch.save(ckpt_data, save_dir / f"phase0_epoch_{epoch + 1:03d}.pt")
+
+    if is_main:
+        print(f"[Phase 0] Training complete! Best loss: {best_loss:.5f}. Checkpoints saved in {save_dir}")
+
+    if is_dist:
+        dist.destroy_process_group()
 
 if __name__ == "__main__":
     main()
