@@ -120,8 +120,9 @@ def main():
             if is_main:
                 pbar.set_postfix({
                     "loss": f"{loss_val:.4f}",
-                    "stft": f"{float(parts.get('stft', 0)):.3f}",
-                    "l1": f"{float(parts.get('l1', 0)):.3f}",
+                    "mrstft": f"{float(parts.get('mrstft', parts.get('stft', 0))):.3f}",
+                    "wave": f"{float(parts.get('wave', parts.get('l1', 0))):.3f}",
+                    "sub": f"{float(parts.get('subband', 0)):.3f}",
                 })
 
         avg_loss = total_loss / max(1, len(dl))

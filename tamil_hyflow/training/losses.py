@@ -12,6 +12,7 @@ def _stft_mag(x, n_fft, hop, win):
         x = x.squeeze(1)
     elif x.ndim == 1:
         x = x.unsqueeze(0)
+    x = x.float()  # Compute STFT in float32 to prevent ComplexHalf warning and ensure maximum precision
     window = torch.hann_window(win, device=x.device, dtype=x.dtype)
     return torch.stft(x, n_fft=n_fft, hop_length=hop, win_length=win, window=window, return_complex=True).abs()
 
@@ -71,7 +72,13 @@ def codec_loss(pred, branches, target, subband_weight=1.0, stft_weight=1.0, wave
         F.l1_loss(b_high, high_t)
     )
     total = wave_weight * loss_wave + stft_weight * loss_stft + subband_weight * loss_sub
-    return total, {"wave": loss_wave.detach(), "mrstft": loss_stft.detach(), "subband": loss_sub.detach()}
+    return total, {
+        "wave": loss_wave.detach(),
+        "l1": loss_wave.detach(),
+        "mrstft": loss_stft.detach(),
+        "stft": loss_stft.detach(),
+        "subband": loss_sub.detach(),
+    }
 
 def flow_loss(velocity, target_velocity, mask=None):
     if mask is None:
