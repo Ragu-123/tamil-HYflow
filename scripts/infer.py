@@ -41,7 +41,8 @@ def main():
         ta = max(25, int(n_frames[0].item()))
         z = torch.randn(1, ta, 64, device=device)
         ts = torch.linspace(0, 1, args.steps + 1, device=device)
-        for t0, t1 in zip(ts[:-1], ts[1:]):
+        from tqdm import tqdm
+        for t0, t1 in tqdm(zip(ts[:-1], ts[1:]), total=args.steps, desc="CFM ODE Sampling", leave=False):
             t = torch.full((1,), float(t0), device=device)
             v, _ = model.cfm_velocity(z, h, prior, speaker, t, mask)
             z = z + (t1 - t0) * v

@@ -5,19 +5,25 @@ def build_notebook():
     cells = []
 
     def md(source):
+        lines = [line + "\n" for line in source.strip().splitlines()]
+        if lines:
+            lines[-1] = lines[-1].rstrip("\n")
         return {
             "cell_type": "markdown",
             "metadata": {},
-            "source": [line + "\n" for line in source.strip().split("\n")]
+            "source": lines
         }
 
     def code(source):
+        lines = [line + "\n" for line in source.strip().splitlines()]
+        if lines:
+            lines[-1] = lines[-1].rstrip("\n")
         return {
             "cell_type": "code",
             "execution_count": None,
             "metadata": {},
             "outputs": [],
-            "source": [line + "\n" for line in source.strip().split("\n")]
+            "source": lines
         }
 
     # Cell 1: Header
@@ -74,35 +80,33 @@ else:
 print("=" * 60)"""))
 
     # Cell 3: Clone Repo & Install
-    cells.append(md("""## 2. 📦 Clone Tamil-HyFlow Repository & Setup Dependencies"""))
+    cells.append(md("""## 2. 📦 Setup Tamil-HyFlow Repository & Dependencies"""))
     cells.append(code("""import os
+import sys
 from pathlib import Path
 
-# Workspace directory in Kaggle
-WORKSPACE_DIR = Path("/kaggle/working/tamil_hyflow_workspace")
+# Setup repository path
 REPO_URL = "https://github.com/Ragu-123/tamil-HYflow.git"
-REPO_DIR = WORKSPACE_DIR / "tamil-HYflow"
 
-WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
-os.chdir(WORKSPACE_DIR)
-
-if not REPO_DIR.exists():
+if Path("tamil_hyflow").exists():
+    print("Found local tamil_hyflow codebase in current directory.")
+else:
     print(f"Cloning Tamil-HyFlow from {REPO_URL}...")
     !git clone {REPO_URL}
-else:
-    print(f"Repository already exists at {REPO_DIR}. Pulling latest...")
-    !cd {REPO_DIR} && git pull
+    if Path("tamil-HYflow").exists():
+        os.chdir("tamil-HYflow")
+    elif Path("tamil-HyFlow").exists():
+        os.chdir("tamil-HyFlow")
 
-os.chdir(REPO_DIR)
-print(f"Current Directory: {os.getcwd()}")
+print(f"Current Working Directory: {os.getcwd()}")
 
 # Install dependencies and editable package
 !pip install -q soundfile tqdm
 !pip install -e .
 
 # Add to python path
-if str(REPO_DIR) not in sys.path:
-    sys.path.insert(0, str(REPO_DIR))"""))
+if "." not in sys.path:
+    sys.path.insert(0, ".")"""))
 
     # Cell 4: Smoke Test
     cells.append(md("""## 3. 🧪 Architecture Smoke Test
@@ -426,9 +430,10 @@ def synthesize_tamil_speech(
         # Initial standard Gaussian latent noise z_0 ~ N(0, I)
         z = torch.randn(1, num_acoustic_frames, 64, device=dev)
         
-        # Euler Integration along Vector Field v_t
+        # Euler Integration along Vector Field v_t with tqdm progress
+        from tqdm import tqdm
         time_steps = torch.linspace(0, 1, steps + 1, device=dev)
-        for t0, t1 in zip(time_steps[:-1], time_steps[1:]):
+        for t0, t1 in tqdm(zip(time_steps[:-1], time_steps[1:]), total=steps, desc="Flow ODE Sampling", leave=False):
             t_curr = torch.full((1,), float(t0), device=dev)
             v, _ = model.cfm_velocity(z, h, prior, speaker, t_curr, mask)
             z = z + (t1 - t0) * v
@@ -490,23 +495,8 @@ print("You can download this archive from the Kaggle Output section!")"""))
     notebook = {
         "cells": cells,
         "metadata": {
-            "accelerator": "GPU",
-            "kaggle": {
-                "accelerator": "gpu",
-                "dataSources": [
-                    {
-                        "datasetId": 0,
-                        "sourceId": 0,
-                        "sourceType": "datasetVersion"
-                    }
-                ],
-                "isGpuEnabled": True,
-                "isInternetEnabled": True,
-                "language": "python"
-            },
             "language_info": {
-                "name": "python",
-                "version": "3.10.0"
+                "name": "python"
             }
         },
         "nbformat": 4,
@@ -526,4 +516,4 @@ if __name__ == "__main__":
     with open("tamil_hyflow_kaggle_training.ipynb", "w", encoding="utf-8") as f:
         json.dump(nb, f, indent=2, ensure_ascii=False)
         
-    print(f"Wrote notebook with {len(nb['cells'])} cells.")
+    print(f"Wrote clean notebook with {len(nb['cells'])} cells.")
