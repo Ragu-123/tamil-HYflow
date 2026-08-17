@@ -55,8 +55,13 @@ def main():
     if is_main:
         print(f"[Phase 1] Loaded dataset with {len(ds)} utterances")
 
+    if torch.cuda.is_available():
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.backends.cudnn.benchmark = True
+
     sampler = DistributedSampler(ds, num_replicas=world_size, rank=rank, shuffle=True) if is_dist else None
-    num_workers = min(cfg.num_workers, 2)
+    num_workers = cfg.num_workers
 
     dl = DataLoader(
         ds,
@@ -66,6 +71,7 @@ def main():
         num_workers=num_workers,
         collate_fn=collate_batch,
         pin_memory=(device.type == "cuda"),
+        persistent_workers=(num_workers > 0),
         drop_last=True
     )
 

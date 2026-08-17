@@ -2,7 +2,15 @@ from pathlib import Path
 import torch
 import torchaudio
 
-def load_audio(path: str | Path, sample_rate: int = 24000, mono: bool = True, normalize: bool = True) -> tuple[torch.Tensor, int]:
+def load_audio(
+    path: str | Path,
+    sample_rate: int = 24000,
+    mono: bool = True,
+    normalize: bool = True,
+    target_sr: int | None = None,
+) -> tuple[torch.Tensor, int]:
+    if target_sr is not None:
+        sample_rate = target_sr
     path_str = str(path)
     try:
         waveform, sr = torchaudio.load(path_str)

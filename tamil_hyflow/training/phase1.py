@@ -18,28 +18,32 @@ class Phase1Runner:
         self.length_weight = length_weight
 
     def train_step(self, batch):
+        m = self.model.module if hasattr(self.model, "module") else self.model
         audio = batch.audio.to(self.device)
         features = tuple(x.to(self.device) for x in (batch.cons_id, batch.vowel_id, batch.length_id, batch.class_id, batch.word_bound_id, batch.punct_id))
         text_mask = batch.text_mask.to(self.device)
-        with torch.no_grad():
-            z1 = self.model.encode_audio(audio)
-        h = self.model.encode_text(features, text_mask)
-        posterior = self.model.posterior_pass(z1, h, text_mask)
-        prior = self.model.prior_pass(h, text_mask)
-        speaker = self.model.speaker(audio)
-        p_fused = self.model.prosody_fusion(posterior, z1.shape[1])
-        _, global_rec = self.model.prosody_rec(p_fused, [posterior[k][0] for k in ("u", "p", "w", "s")])
-        f0, energy, voicing = extract_prosody(audio, 24000)
-        z0, zt, target, t = self.model.cfm_pair(z1)
-        velocity, weights = self.model.cfm_velocity(zt, h, posterior, speaker, t, text_mask)
-        rec_local, _ = self.model.prosody_rec(p_fused, [posterior[k][0] for k in ("u", "p", "w", "s")])
-        rec_loss, _ = prosody_reconstruction_loss(rec_local, (f0[:, :rec_local.shape[1]], energy[:, :rec_local.shape[1]], voicing[:, :rec_local.shape[1]]))
-        kl = prosody_kl(posterior, prior)
-        target_frames = torch.tensor([z1.shape[1]] * audio.shape[0], device=self.device, dtype=torch.float32)
-        stats = self.model.length(h, posterior["u"], speaker)
-        length = total_length_loss(stats, target_frames)
-        flow = flow_loss(velocity, target)
-        loss = flow + self.kl_weight * kl + self.prosody_weight * rec_loss + self.length_weight * length
+
+        autocast_ctx = torch.amp.autocast("cuda", enabled=self.amp) if hasattr(torch, "amp") else torch.cuda.amp.autocast(enabled=self.amp)
+        with autocast_ctx:
+            with torch.no_grad():
+                z1 = m.encode_audio(audio)
+            h = m.encode_text(features, text_mask)
+            posterior = m.posterior_pass(z1, h, text_mask)
+            prior = m.prior_pass(h, text_mask)
+            speaker = m.speaker(audio)
+            p_fused = m.prosody_fusion(posterior, z1.shape[1])
+            rec_local, global_rec = m.prosody_rec(p_fused, [posterior[k][0] for k in ("u", "p", "w", "s")])
+            f0, energy, voicing = extract_prosody(audio, 24000)
+            z0, zt, target, t = m.cfm_pair(z1)
+            velocity, weights = m.cfm_velocity(zt, h, posterior, speaker, t, text_mask)
+            rec_loss, _ = prosody_reconstruction_loss(rec_local, (f0[:, :rec_local.shape[1]], energy[:, :rec_local.shape[1]], voicing[:, :rec_local.shape[1]]))
+            kl = prosody_kl(posterior, prior)
+            target_frames = torch.tensor([z1.shape[1]] * audio.shape[0], device=self.device, dtype=torch.float32)
+            stats = m.length(h, posterior["u"], speaker)
+            length = total_length_loss(stats, target_frames)
+            flow = flow_loss(velocity, target)
+            loss = flow + self.kl_weight * kl + self.prosody_weight * rec_loss + self.length_weight * length
+
         self.optimizer.zero_grad(set_to_none=True)
         self.scaler.scale(loss).backward()
         self.scaler.unscale_(self.optimizer)
